@@ -4,9 +4,13 @@ from esi_app.models import CharacterWallet, CharacterApi, CharacterWalletJournal
     CorporationWalletTransaction
 from result import Ok, Result
 
+import logging
+
+_logger = logging.getLogger('db')
+
 
 def character_wallet(character_api: CharacterApi) -> Result:
-    print("character_wallet")
+    _logger.debug('wallet.character_wallet')
     character_id = character_api.character.character_id
     path = character_api.api.path.format(character_id=character_id)
 
@@ -24,7 +28,7 @@ def character_wallet(character_api: CharacterApi) -> Result:
 
 
 def character_wallet_journal(character_api: CharacterApi) -> Result:
-    print("character_wallet_journal")
+    _logger.debug('wallet.character_wallet_journal')
     character_id = character_api.character.character_id
     path = character_api.api.path.format(character_id=character_id)
 
@@ -41,7 +45,7 @@ def character_wallet_journal(character_api: CharacterApi) -> Result:
 
 
 def character_wallet_transactions(character_api: CharacterApi) -> Result:
-    print("character_wallet_transactions")
+    _logger.debug('wallet.character_wallet_transactions')
     character_id = character_api.character.character_id
     path = character_api.api.path.format(character_id=character_id)
 
@@ -58,7 +62,7 @@ def character_wallet_transactions(character_api: CharacterApi) -> Result:
 
 
 def corporation_wallet(character_api: CharacterApi) -> Result:
-    print("corporation_wallet")
+    _logger.debug('wallet.corporation_wallet')
     corporation_id = character_api.character.corporation_id
     path = character_api.api.path.format(corporation_id=corporation_id)
 
@@ -78,7 +82,7 @@ def corporation_wallet(character_api: CharacterApi) -> Result:
 
 
 def corporation_wallet_journal(character_api: CharacterApi) -> Result:
-    print("corporation_wallet_journal")
+    _logger.debug('wallet.corporation_wallet_journal')
     corporation_id = character_api.character.corporation_id
 
     for division in CorporationDivision.objects.filter(corporation_id=corporation_id, type='wallet'):
@@ -97,7 +101,7 @@ def corporation_wallet_journal(character_api: CharacterApi) -> Result:
 
 
 def corporation_wallet_transactions(character_api: CharacterApi) -> Result:
-    print("corporation_wallet_transactions")
+    _logger.debug(f'{__file__}.corporation_wallet_transactions')
     corporation_id = character_api.character.corporation_id
 
     for division in CorporationDivision.objects.filter(corporation_id=corporation_id, type='wallet'):

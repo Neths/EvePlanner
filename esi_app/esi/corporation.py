@@ -2,9 +2,13 @@ from esi_app.shared import call_get_esi_secure
 from esi_app.models import CharacterApi, CorporationWallet, CorporationDivision
 from result import Ok, Result
 
+import logging
+
+_logger = logging.getLogger('db')
+
 
 def divisions(character_api: CharacterApi) -> Result:
-    print("corporation_divisions")
+    _logger.debug('corporation_divisions')
     corporation_id = character_api.character.corporation_id
     if corporation_id is None:
         return Ok(0)

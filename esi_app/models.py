@@ -129,7 +129,7 @@ class CharacterWalletJournal(models.Model):
     tax_receiver_id = models.FloatField(null=True)
 
     def __str__(self):
-        return f"{self.character.name}'s wallet journal entry"
+        return f"{self.character.name}'s wallet journal entry - id {self.id}"
 
 
 class CorporationWalletJournal(models.Model):

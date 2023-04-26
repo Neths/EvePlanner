@@ -16,23 +16,45 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 
-import reader.views
-from reader.views import Home, CharacterViewSet
+import reader
 from rest_framework_extensions.routers import ExtendedSimpleRouter
 
+from reader.views.character_views import CharacterViewSet, CharacterWalletJournalViewSet, \
+    CharacterWalletTransactionViewSet
+from reader.views.corporation_views import CorporationViewSet, CorporationDivisionViewSet, \
+    CorporationWalletJournalViewSet
+from reader.views.default import Home
 
 router = ExtendedSimpleRouter()
-(
-    router  .register(r'characters',
-                      CharacterViewSet,
-                      basename='character')
-)
+characters_routes = router.register(r'characters', CharacterViewSet, basename='character')
+characters_routes.register(r'wallet',
+                           CharacterWalletJournalViewSet,
+                           basename='wallet',
+                           parents_query_lookups=['character_id'])
+characters_routes.register(r'transaction',
+                           CharacterWalletTransactionViewSet,
+                           basename='transaction',
+                           parents_query_lookups=['character_id'])
+
+corporations_routes = router.register(r'corporations', CorporationViewSet, basename='corporation')
+corp_divisions_routes = corporations_routes.register(r'divisions',
+                                                     CorporationDivisionViewSet,
+                                                     basename='division',
+                                                     parents_query_lookups=['corporation_id'])
+corp_divisions_routes.register(r'wallet',
+                               CorporationWalletJournalViewSet,
+                               basename='wallet',
+                               parents_query_lookups=['corporation_id', 'division_id'])
+corp_divisions_routes.register(r'transaction',
+                               CharacterWalletTransactionViewSet,
+                               basename='transaction',
+                               parents_query_lookups=['corporation_id', 'division_id'])
 
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', Home.as_view(), name='home'),
     path('api/', include(router.urls)),
-    path('api/register/', reader.views.register_new_character),
-    path('api/register/callback/', reader.views.register_callback)
+    path('api/register/', reader.views.default.register_new_character),
+    path('api/register/callback/', reader.views.default.register_callback)
 ]
