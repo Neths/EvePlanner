@@ -936,64 +936,62 @@ volumes:
 
 ## 7. Plan de Développement
 
-### Phase 1 : MVP - Données Statiques Universe
-- [ ] Configuration du projet .NET 8 Console Application avec Generic Host
-- [ ] Génération du client ESI avec NSwag depuis Swagger ESI
-- [ ] Configuration Dapper + Npgsql pour PostgreSQL
-- [ ] Mise en place DbUp pour migrations SQL
-- [ ] Implémentation du rate limiting avec Polly
-- [ ] Configuration TickerQ pour scheduling de base
-- [ ] Schéma de base de données - Priorité 1 (Universe)
-  - [ ] Tables: categories, groups, types, regions, constellations, systems, stations
-- [ ] Collecteur de données statiques Universe
-  - [ ] UniverseTypesCollectorService (bulk import)
-  - [ ] UniverseRegionsCollectorService
-  - [ ] UniverseSystemsCollectorService
-  - [ ] UniverseStationsCollectorService
-- [ ] Logging structuré avec Serilog (console)
-- [ ] Docker & docker-compose
-- [ ] README avec instructions
+### Phase 1 : MVP - Données Statiques Universe ✅ TERMINÉ
+- [x] Configuration du projet .NET 8 Console Application avec Generic Host
+- [x] Génération du client ESI avec NSwag depuis Swagger ESI
+- [x] Configuration Dapper + Npgsql pour PostgreSQL
+- [x] Mise en place des migrations SQL (raw SQL files)
+- [x] Implémentation du rate limiting avec Polly
+- [x] Configuration NCrontab pour scheduling (alternative à TickerQ)
+- [x] Schéma de base de données - Priorité 1 (Universe)
+  - [x] Tables: categories, groups, types, regions, constellations, systems, stations
+- [x] Collecteur de données statiques Universe
+  - [x] UniverseCollector (collecte complète de l'univers)
+  - [x] Repositories avec Dapper pour toutes les entités
+- [x] Logging structuré avec Serilog (console)
+- [x] Docker & docker-compose (PostgreSQL)
+- [x] README avec instructions
 
-### Phase 2 : Wallet, Assets, Orders (Personnel & Corporation)
-- [ ] Implémentation authentification SSO EVE Online
-  - [ ] OAuth2 flow (SSOAuthenticationHandler)
-  - [ ] Token refresh management (TokenManager)
-  - [ ] Token encryption (TokenEncryptionService)
-  - [ ] Scopes configuration et validation
-- [ ] Schéma de base de données - Priorité 2
-  - [ ] Tables: characters, corporations
-  - [ ] Tables: esi_tokens, esi_token_scopes, collector_assignments
-  - [ ] Tables: wallet_journal, wallet_transactions
-  - [ ] Tables: assets, asset_diffs
-  - [ ] Tables: character_orders, corporation_orders
-- [ ] Repositories de gestion des tokens
-  - [ ] EsiTokenRepository (CRUD tokens)
-  - [ ] CollectorAssignmentRepository (configuration collecteurs)
-- [ ] Services de gestion
-  - [ ] TokenManagementService (ajout/suppression tokens)
-  - [ ] CollectorAssignmentService (enable/disable collecteurs)
-  - [ ] TokenRefreshScheduler (auto-refresh avant expiration)
-- [ ] Collecteurs authentifiés
-  - [ ] WalletJournalCollectorService (character + corp)
-  - [ ] WalletTransactionsCollectorService (character + corp)
-  - [ ] AssetsCollectorService (character + corp)
-  - [ ] AssetDiffService (calcul des diffs entre snapshots)
-  - [ ] CharacterOrdersCollectorService
-  - [ ] CorporationOrdersCollectorService
-- [ ] Configuration multi-character/multi-corporation
-- [ ] Optimisation requêtes Dapper avec bulk operations
-- [ ] API optionnelle de gestion des tokens (POST/DELETE/PUT)
+### Phase 2 : Wallet, Assets, Orders (Personnel & Corporation) ✅ TERMINÉ
+- [x] Implémentation authentification SSO EVE Online
+  - [x] OAuth2 flow (EsiOAuthClient)
+  - [x] Token refresh management (TokenRefreshService)
+  - [x] Token storage (AuthRepository)
+  - [x] Scopes configuration et validation
+- [x] Schéma de base de données - Priorité 2
+  - [x] Tables: characters, corporations, alliances
+  - [x] Tables: esi_applications, esi_tokens
+  - [x] Tables: character_wallet (balance, journal, transactions)
+  - [x] Tables: character_skills, character_skill_queue
+  - [x] Tables: character_assets
+- [x] Repositories de gestion des tokens
+  - [x] AuthRepository (CRUD tokens, applications, characters)
+- [x] Services de gestion
+  - [x] CharacterAuthService (OAuth flow complet)
+  - [x] TokenRefreshService (auto-refresh avant expiration)
+  - [x] OAuthCallbackServer (serveur callback temporaire)
+- [x] Collecteurs authentifiés
+  - [x] CharacterSkillsCollector (skills + queue)
+  - [x] CharacterAssetsCollector (assets avec pagination)
+  - [x] CharacterWalletCollector (balance, journal, transactions)
+  - [x] CharacterDataCollector (orchestrateur)
+- [x] Configuration multi-character
+- [x] Optimisation requêtes Dapper avec bulk operations
+- [x] CLI intégré pour gestion des personnages (menu options 2, 3, 4)
 
-### Phase 3 : Market Data Public
-- [ ] Schéma de base de données - Priorité 3
-  - [ ] Tables: market_orders_public, market_history
-- [ ] Collecteurs de marché public
-  - [ ] MarketOrdersCollectorService (multi-régions)
-  - [ ] MarketHistoryCollectorService
-  - [ ] MarketPricesCollectorService
-- [ ] Support multi-régions configurable
-- [ ] Optimisation time-series (TimescaleDB optionnel)
-- [ ] Configuration avancée TickerQ (intervals différents par collecteur)
+### Phase 3 : Market Data Public ✅ TERMINÉ
+- [x] Schéma de base de données - Priorité 3
+  - [x] Tables: market_orders, market_prices, market_history
+- [x] Collecteurs de marché public
+  - [x] MarketOrdersCollector (multi-régions avec pagination)
+  - [x] MarketHistoryCollector (par type et région)
+  - [x] MarketPricesCollector (prix globaux CCP)
+  - [x] MarketDataCollector (orchestrateur)
+- [x] Support multi-régions configurable (appsettings.json)
+- [x] Repository avec Dapper (MarketRepository)
+- [x] Scheduled job (MarketCollectionJob, toutes les 15 minutes)
+- [x] CLI intégré pour collecte manuelle (menu option 5)
+- [x] IScheduledJob interface pour système de jobs
 
 ### Phase 4 : Industry Data
 - [ ] Schéma de base de données - Priorité 4
@@ -1231,17 +1229,18 @@ EveDataCollector/
 
 **Date de création** : 2025-10-16
 **Dernière mise à jour** : 2025-10-18
-**Version** : 4.0.0
+**Version** : 5.0.0
 
-**Changelog v4.0.0** :
-- ✅ Ajout gestion complète des tokens SSO (esi_tokens, esi_token_scopes, collector_assignments)
-- ✅ Ajout système de diff pour assets (asset_diffs table)
-- ✅ Ajout services de gestion des tokens (TokenManagementService, TokenEncryptionService)
-- ✅ Ajout scheduler de refresh automatique des tokens (TokenRefreshScheduler)
-- ✅ Ajout algorithme de calcul des diffs d'assets avec exemples de code
-- ✅ Documentation complète du workflow d'ajout/suppression de tokens
-- ✅ API optionnelle de gestion des tokens
-- ✅ 16 migrations SQL au lieu de 13 (ajout tokens + diffs)
+**Changelog v5.0.0** :
+- ✅ **Phase 1 complétée** : Collecte données statiques Universe (categories, groups, types, regions, systems, stations)
+- ✅ **Phase 2 complétée** : Authentification OAuth2 + collecte données personnages (skills, assets, wallet)
+- ✅ **Phase 3 complétée** : Collecte données marché public (orders, prices, history)
+- ✅ Infrastructure de scheduled jobs avec IScheduledJob interface
+- ✅ 16 migrations SQL appliquées (Universe, Auth, Character, Market)
+- ✅ CLI complet avec 5 menus (Universe, OAuth, Characters, Character Data, Market Data)
+- ✅ Utilisation de NCrontab au lieu de TickerQ pour scheduling
+- ✅ TokenRefreshService pour auto-refresh des tokens OAuth
+- ✅ MarketCollectionJob et UniverseCollectionJob opérationnels
 
 ---
 
