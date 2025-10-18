@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\EveDataCollector.Core\EveDataCollector.Core.csproj" />
+    <ProjectReference Include="..\EveDataCollector.Shared\EveDataCollector.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="Npgsql" Version="9.0.4" />
+    <PackageReference Include="NSwag.CodeGeneration.CSharp" Version="14.6.1" />
+    <PackageReference Include="Polly" Version="8.6.4" />
+    <PackageReference Include="System.Net.Http.Json" Version="9.0.10" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Suppress errors in generated code -->
+    <NoWarn>$(NoWarn);CS0579;CS0111</NoWarn>
+  </PropertyGroup>
+
+</Project>

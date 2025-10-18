@@ -1,0 +1,6 @@
+# Disable warnings for generated code
+[ESI/Generated/*.cs]
+# Disable duplicate attribute warnings
+dotnet_diagnostic.CS0579.severity = none
+# Disable duplicate member warnings
+dotnet_diagnostic.CS0111.severity = none
