@@ -1,8 +1,10 @@
 using EveDataCollector.Core.Interfaces.Auth;
 using EveDataCollector.Core.Interfaces.Repositories;
+using EveDataCollector.Core.Interfaces.Jobs;
 using EveDataCollector.Infrastructure.Auth;
 using EveDataCollector.Infrastructure.Collectors;
 using EveDataCollector.Infrastructure.ESI;
+using EveDataCollector.Infrastructure.Jobs;
 using EveDataCollector.Infrastructure.Repositories;
 using EveDataCollector.Shared.Auth;
 using Microsoft.Extensions.Configuration;
@@ -53,10 +55,39 @@ builder.Services.AddHttpClient<AuthenticatedEsiClient>(client =>
 })
 .AddPolicyHandler(GetRetryPolicy());
 
+// Register HttpClient for market collectors
+builder.Services.AddHttpClient<MarketOrdersCollector>(client =>
+{
+    var esiConfig = builder.Configuration.GetSection("EsiClient");
+    client.BaseAddress = new Uri(esiConfig["BaseUrl"] ?? "https://esi.evetech.net/latest");
+    client.DefaultRequestHeaders.Add("User-Agent", esiConfig["UserAgent"] ?? "EveDataCollector/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(int.Parse(esiConfig["Timeout"] ?? "30"));
+})
+.AddPolicyHandler(GetRetryPolicy());
+
+builder.Services.AddHttpClient<MarketPricesCollector>(client =>
+{
+    var esiConfig = builder.Configuration.GetSection("EsiClient");
+    client.BaseAddress = new Uri(esiConfig["BaseUrl"] ?? "https://esi.evetech.net/latest");
+    client.DefaultRequestHeaders.Add("User-Agent", esiConfig["UserAgent"] ?? "EveDataCollector/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(int.Parse(esiConfig["Timeout"] ?? "30"));
+})
+.AddPolicyHandler(GetRetryPolicy());
+
+builder.Services.AddHttpClient<MarketHistoryCollector>(client =>
+{
+    var esiConfig = builder.Configuration.GetSection("EsiClient");
+    client.BaseAddress = new Uri(esiConfig["BaseUrl"] ?? "https://esi.evetech.net/latest");
+    client.DefaultRequestHeaders.Add("User-Agent", esiConfig["UserAgent"] ?? "EveDataCollector/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(int.Parse(esiConfig["Timeout"] ?? "30"));
+})
+.AddPolicyHandler(GetRetryPolicy());
+
 // Register repositories
 builder.Services.AddScoped<IUniverseRepository, UniverseRepository>();
 builder.Services.AddScoped<IAuthRepository, AuthRepository>();
 builder.Services.AddScoped<ICharacterDataRepository, CharacterDataRepository>();
+builder.Services.AddScoped<IMarketRepository, MarketRepository>();
 
 // Register collectors
 builder.Services.AddScoped<UniverseCollector>();
@@ -64,9 +95,17 @@ builder.Services.AddScoped<CharacterSkillsCollector>();
 builder.Services.AddScoped<CharacterAssetsCollector>();
 builder.Services.AddScoped<CharacterWalletCollector>();
 builder.Services.AddScoped<CharacterDataCollector>();
+builder.Services.AddScoped<MarketOrdersCollector>();
+builder.Services.AddScoped<MarketPricesCollector>();
+builder.Services.AddScoped<MarketHistoryCollector>();
+builder.Services.AddScoped<MarketDataCollector>();
 
 // Register OAuth services
 builder.Services.AddScoped<CharacterAuthService>();
+
+// Register scheduled jobs
+builder.Services.AddScoped<IScheduledJob, UniverseCollectionJob>();
+builder.Services.AddScoped<IScheduledJob, MarketCollectionJob>();
 
 // Register background services
 builder.Services.AddHostedService<TokenRefreshService>();
@@ -100,13 +139,14 @@ try
         Log.Information("2. Authorize character (OAuth)");
         Log.Information("3. List authorized characters");
         Log.Information("4. Collect character data");
-        Log.Information("5. Exit");
+        Log.Information("5. Collect market data");
+        Log.Information("6. Exit");
         Log.Information("");
         Console.Write("Select an option: ");
 
         var choice = Console.ReadLine()?.Trim();
 
-        if (choice == "5")
+        if (choice == "6")
         {
             Log.Information("Exiting...");
             break;
@@ -132,8 +172,12 @@ try
                     await CollectCharacterDataAsync(host);
                     break;
 
+                case "5":
+                    await CollectMarketDataAsync(host);
+                    break;
+
                 default:
-                    Log.Warning("Invalid option. Please select 1-5.");
+                    Log.Warning("Invalid option. Please select 1-6.");
                     break;
             }
         }
@@ -319,6 +363,88 @@ static async Task CollectCharacterDataAsync(IHost host)
     else
     {
         Log.Warning("Invalid selection");
+    }
+}
+
+static async Task CollectMarketDataAsync(IHost host)
+{
+    using var scope = host.Services.CreateScope();
+    var marketCollector = scope.ServiceProvider.GetRequiredService<MarketDataCollector>();
+    var config = host.Services.GetRequiredService<IConfiguration>();
+
+    Log.Information("");
+    Log.Information("=== Market Data Collection ===");
+    Log.Information("1. Collect all market data (prices + orders for major trade hubs)");
+    Log.Information("2. Collect market prices only");
+    Log.Information("3. Collect market orders for specific region");
+    Log.Information("4. Back to main menu");
+    Log.Information("");
+    Console.Write("Select an option: ");
+
+    var choice = Console.ReadLine()?.Trim();
+
+    try
+    {
+        switch (choice)
+        {
+            case "1":
+                // Get regions from config or use defaults
+                var regionsConfig = config.GetSection("Scheduling:MarketCollection:Regions").Get<int[]>();
+                var regions = regionsConfig ?? new[]
+                {
+                    10000002,  // The Forge (Jita)
+                    10000043,  // Domain (Amarr)
+                    10000032,  // Sinq Laison (Dodixie)
+                    10000030,  // Heimatar (Rens)
+                    10000042   // Metropolis (Hek)
+                };
+
+                Log.Information("Collecting market data for {Count} regions...", regions.Length);
+                await marketCollector.CollectAllMarketDataAsync(regions);
+                Log.Information("Market data collection completed!");
+                break;
+
+            case "2":
+                Log.Information("Collecting global market prices...");
+                await marketCollector.CollectMarketPricesAsync();
+                Log.Information("Market prices collection completed!");
+                break;
+
+            case "3":
+                Log.Information("");
+                Log.Information("Major regions:");
+                Log.Information("10000002 - The Forge (Jita)");
+                Log.Information("10000043 - Domain (Amarr)");
+                Log.Information("10000032 - Sinq Laison (Dodixie)");
+                Log.Information("10000030 - Heimatar (Rens)");
+                Log.Information("10000042 - Metropolis (Hek)");
+                Log.Information("");
+                Console.Write("Enter region ID: ");
+
+                var regionInput = Console.ReadLine()?.Trim();
+                if (int.TryParse(regionInput, out var regionId))
+                {
+                    Log.Information("Collecting market orders for region {RegionId}...", regionId);
+                    await marketCollector.CollectMarketOrdersAsync(new[] { regionId });
+                    Log.Information("Market orders collection completed!");
+                }
+                else
+                {
+                    Log.Warning("Invalid region ID");
+                }
+                break;
+
+            case "4":
+                return;
+
+            default:
+                Log.Warning("Invalid option. Please select 1-4.");
+                break;
+        }
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Error collecting market data");
     }
 }
 
