@@ -1,4 +1,7 @@
+using EveDataCollector.Core.Interfaces.Repositories;
+using EveDataCollector.Infrastructure.Collectors;
 using EveDataCollector.Infrastructure.ESI;
+using EveDataCollector.Infrastructure.Repositories;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -34,6 +37,12 @@ builder.Services.AddSingleton<Func<NpgsqlConnection>>(sp =>
     return () => new NpgsqlConnection(connectionString);
 });
 
+// Register repositories
+builder.Services.AddScoped<IUniverseRepository, UniverseRepository>();
+
+// Register collectors
+builder.Services.AddScoped<UniverseCollector>();
+
 // Build and run
 var host = builder.Build();
 
@@ -54,8 +63,27 @@ try
     var categories = await esiClient.Universe.GetCategoriesAsync();
     Log.Information("ESI client test successful: Found {Count} categories", categories.Count);
 
-    Log.Information("All systems operational. Press Ctrl+C to exit.");
-    await host.RunAsync();
+    // Ask user if they want to collect Universe data
+    Log.Information("");
+    Log.Information("Do you want to collect Universe data? (y/n)");
+    var answer = Console.ReadLine()?.Trim().ToLower();
+
+    if (answer == "y" || answer == "yes")
+    {
+        using var scope = host.Services.CreateScope();
+        var collector = scope.ServiceProvider.GetRequiredService<UniverseCollector>();
+
+        await collector.CollectAllAsync();
+
+        Log.Information("Universe data collection completed successfully!");
+    }
+    else
+    {
+        Log.Information("Skipping Universe data collection.");
+    }
+
+    Log.Information("");
+    Log.Information("All systems operational. Application will now exit.");
 }
 catch (Exception ex)
 {
