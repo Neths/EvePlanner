@@ -1,7 +1,10 @@
+using EveDataCollector.Core.Interfaces.Jobs;
 using EveDataCollector.Core.Interfaces.Repositories;
 using EveDataCollector.Infrastructure.Collectors;
 using EveDataCollector.Infrastructure.ESI;
+using EveDataCollector.Infrastructure.Jobs;
 using EveDataCollector.Infrastructure.Repositories;
+using EveDataCollector.Shared.Scheduling;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -43,6 +46,12 @@ builder.Services.AddScoped<IUniverseRepository, UniverseRepository>();
 // Register collectors
 builder.Services.AddScoped<UniverseCollector>();
 
+// Register scheduled jobs
+builder.Services.AddScoped<IScheduledJob, UniverseCollectionJob>();
+
+// Register job scheduler as hosted service
+builder.Services.AddHostedService<JobSchedulerService>();
+
 // Build and run
 var host = builder.Build();
 
@@ -63,9 +72,10 @@ try
     var categories = await esiClient.Universe.GetCategoriesAsync();
     Log.Information("ESI client test successful: Found {Count} categories", categories.Count);
 
-    // Ask user if they want to collect Universe data
+    // Ask user if they want to collect Universe data immediately
     Log.Information("");
-    Log.Information("Do you want to collect Universe data? (y/n)");
+    Log.Information("Do you want to collect Universe data now? (y/n)");
+    Log.Information("(Data will be collected automatically according to schedule)");
     var answer = Console.ReadLine()?.Trim().ToLower();
 
     if (answer == "y" || answer == "yes")
@@ -79,11 +89,15 @@ try
     }
     else
     {
-        Log.Information("Skipping Universe data collection.");
+        Log.Information("Skipping immediate Universe data collection.");
     }
 
     Log.Information("");
-    Log.Information("All systems operational. Application will now exit.");
+    Log.Information("All systems operational. Job scheduler is running...");
+    Log.Information("Press Ctrl+C to stop.");
+
+    // Run the host (this will keep the application running and execute scheduled jobs)
+    await host.RunAsync();
 }
 catch (Exception ex)
 {
