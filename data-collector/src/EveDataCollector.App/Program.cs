@@ -43,12 +43,27 @@ builder.Services.AddSingleton<Func<NpgsqlConnection>>(sp =>
 // Register HttpClient for OAuth
 builder.Services.AddHttpClient<IEsiOAuthClient, EsiOAuthClient>();
 
+// Register HttpClient for authenticated ESI
+builder.Services.AddHttpClient<AuthenticatedEsiClient>(client =>
+{
+    var esiConfig = builder.Configuration.GetSection("EsiClient");
+    client.BaseAddress = new Uri(esiConfig["BaseUrl"] ?? "https://esi.evetech.net/latest");
+    client.DefaultRequestHeaders.Add("User-Agent", esiConfig["UserAgent"] ?? "EveDataCollector/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(int.Parse(esiConfig["Timeout"] ?? "30"));
+})
+.AddPolicyHandler(GetRetryPolicy());
+
 // Register repositories
 builder.Services.AddScoped<IUniverseRepository, UniverseRepository>();
 builder.Services.AddScoped<IAuthRepository, AuthRepository>();
+builder.Services.AddScoped<ICharacterDataRepository, CharacterDataRepository>();
 
 // Register collectors
 builder.Services.AddScoped<UniverseCollector>();
+builder.Services.AddScoped<CharacterSkillsCollector>();
+builder.Services.AddScoped<CharacterAssetsCollector>();
+builder.Services.AddScoped<CharacterWalletCollector>();
+builder.Services.AddScoped<CharacterDataCollector>();
 
 // Register OAuth services
 builder.Services.AddScoped<CharacterAuthService>();
@@ -84,13 +99,14 @@ try
         Log.Information("1. Collect Universe data");
         Log.Information("2. Authorize character (OAuth)");
         Log.Information("3. List authorized characters");
-        Log.Information("4. Exit");
+        Log.Information("4. Collect character data");
+        Log.Information("5. Exit");
         Log.Information("");
         Console.Write("Select an option: ");
 
         var choice = Console.ReadLine()?.Trim();
 
-        if (choice == "4")
+        if (choice == "5")
         {
             Log.Information("Exiting...");
             break;
@@ -112,8 +128,12 @@ try
                     await ListCharactersAsync(host);
                     break;
 
+                case "4":
+                    await CollectCharacterDataAsync(host);
+                    break;
+
                 default:
-                    Log.Warning("Invalid option. Please select 1-4.");
+                    Log.Warning("Invalid option. Please select 1-5.");
                     break;
             }
         }
@@ -222,6 +242,83 @@ static async Task ListCharactersAsync(IHost host)
             Log.Information("  Corporation: {Corp}", character.CorporationName);
         if (character.AllianceName != null)
             Log.Information("  Alliance: {Alliance}", character.AllianceName);
+    }
+}
+
+static async Task CollectCharacterDataAsync(IHost host)
+{
+    using var scope = host.Services.CreateScope();
+    var authRepository = scope.ServiceProvider.GetRequiredService<IAuthRepository>();
+    var characterCollector = scope.ServiceProvider.GetRequiredService<CharacterDataCollector>();
+
+    var characters = await authRepository.GetAllCharactersAsync();
+
+    if (characters.Count == 0)
+    {
+        Log.Warning("No authorized characters found. Please authorize a character first (option 2).");
+        return;
+    }
+
+    Log.Information("");
+    Log.Information("Select a character to collect data:");
+    for (int i = 0; i < characters.Count; i++)
+    {
+        Log.Information("{Index}. {Name} ({Id})", i + 1, characters[i].CharacterName, characters[i].CharacterId);
+    }
+    Log.Information("0. Collect all characters");
+    Log.Information("");
+    Console.Write("Select character: ");
+
+    var input = Console.ReadLine()?.Trim();
+    if (!int.TryParse(input, out var selection))
+    {
+        Log.Warning("Invalid selection");
+        return;
+    }
+
+    var config = host.Services.GetRequiredService<IConfiguration>();
+    var oauthConfig = config.GetSection("EsiOAuth");
+    var clientId = oauthConfig["ClientId"];
+
+    if (string.IsNullOrWhiteSpace(clientId))
+    {
+        Log.Error("OAuth ClientId not configured");
+        return;
+    }
+
+    // Get application ID
+    var application = await authRepository.GetApplicationByClientIdAsync(clientId);
+    if (application == null)
+    {
+        Log.Error("OAuth application not found in database");
+        return;
+    }
+
+    if (selection == 0)
+    {
+        // Collect all characters
+        Log.Information("Collecting data for all {Count} character(s)...", characters.Count);
+        foreach (var character in characters)
+        {
+            try
+            {
+                await characterCollector.CollectAllAsync(character.CharacterId, application.Id);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to collect data for character {CharacterId}", character.CharacterId);
+            }
+        }
+    }
+    else if (selection > 0 && selection <= characters.Count)
+    {
+        // Collect specific character
+        var character = characters[selection - 1];
+        await characterCollector.CollectAllAsync(character.CharacterId, application.Id);
+    }
+    else
+    {
+        Log.Warning("Invalid selection");
     }
 }
 
