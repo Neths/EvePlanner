@@ -2,6 +2,9 @@
 -- Description: Create types table for EVE item types (items)
 -- Phase: 1 (Universe Static Data)
 
+-- Enable pg_trgm extension for fuzzy text search
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE TABLE IF NOT EXISTS types (
     type_id INTEGER PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
