@@ -2,6 +2,7 @@ using EveDataCollector.Core.Interfaces.Repositories;
 using EveDataCollector.Core.Models.Universe;
 using EveDataCollector.Infrastructure.ESI;
 using Microsoft.Extensions.Logging;
+using System.Threading.Channels;
 
 namespace EveDataCollector.Infrastructure.Collectors;
 
@@ -29,39 +30,54 @@ public class UniverseCollector
     /// </summary>
     public async Task<int> CollectCategoriesAsync(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Starting categories collection...");
-
-        // Get all category IDs
-        var categoryIds = await _esiClient.Universe.GetCategoriesAsync(cancellationToken);
-        _logger.LogInformation("Found {Count} categories", categoryIds.Count);
-
-        // Fetch each category details
-        var categories = new List<Category>();
-        foreach (var categoryId in categoryIds)
+        try
         {
-            try
+            _logger.LogInformation("Starting categories collection...");
+
+            // Get all category IDs
+            var categoryIds = await _esiClient.Universe.GetCategoriesAsync(CancellationToken.None);
+            _logger.LogInformation("Found {Count} categories", categoryIds.Count);
+
+            // Fetch each category details
+            var categories = new List<Category>();
+            foreach (var categoryId in categoryIds)
             {
-                var categoryInfo = await _esiClient.Universe.GetCategoryAsync(categoryId, cancellationToken);
-                categories.Add(new Category
+                if (cancellationToken.IsCancellationRequested) break;
+
+                try
                 {
-                    CategoryId = categoryInfo.CategoryId,
-                    Name = categoryInfo.Name,
-                    Published = categoryInfo.Published,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                });
+                    var categoryInfo = await _esiClient.Universe.GetCategoryAsync(categoryId, CancellationToken.None);
+                    categories.Add(new Category
+                    {
+                        CategoryId = categoryInfo.CategoryId,
+                        Name = categoryInfo.Name,
+                        Published = categoryInfo.Published,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to fetch category {CategoryId}", categoryId);
+                }
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to fetch category {CategoryId}", categoryId);
-            }
+
+            // Bulk insert
+            var inserted = await _repository.BulkInsertCategoriesAsync(categories, CancellationToken.None);
+            _logger.LogInformation("Inserted/Updated {Count} categories", inserted);
+
+            return inserted;
         }
-
-        // Bulk insert
-        var inserted = await _repository.BulkInsertCategoriesAsync(categories, cancellationToken);
-        _logger.LogInformation("Inserted/Updated {Count} categories", inserted);
-
-        return inserted;
+        catch (TaskCanceledException)
+        {
+            _logger.LogInformation("Categories collection was cancelled");
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Categories collection was cancelled");
+            return 0;
+        }
     }
 
     /// <summary>
@@ -106,22 +122,26 @@ public class UniverseCollector
     }
 
     /// <summary>
-    /// Collect types from groups and store in database
+    /// Collect types from groups and store in database (pipeline mode)
     /// </summary>
     public async Task<int> CollectTypesAsync(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Starting types collection...");
+        try
+        {
+            _logger.LogInformation("Starting types collection (pipeline mode)...");
 
-        // Get all group IDs first
-        var groupIds = await _esiClient.Universe.GetGroupsAsync(cancellationToken);
+            // Get all group IDs first
+            var groupIds = await _esiClient.Universe.GetGroupsAsync(CancellationToken.None);
 
         // Collect all type IDs from groups
         var allTypeIds = new HashSet<int>();
         foreach (var groupId in groupIds)
         {
+            if (cancellationToken.IsCancellationRequested) break;
+
             try
             {
-                var groupInfo = await _esiClient.Universe.GetGroupAsync(groupId, cancellationToken);
+                var groupInfo = await _esiClient.Universe.GetGroupAsync(groupId, CancellationToken.None);
                 foreach (var typeId in groupInfo.Types)
                 {
                     allTypeIds.Add(typeId);
@@ -135,49 +155,125 @@ public class UniverseCollector
 
         _logger.LogInformation("Found {Count} unique types across all groups", allTypeIds.Count);
 
-        // Fetch each type details (in batches to avoid overwhelming the API)
-        var types = new List<ItemType>();
-        var processed = 0;
-        foreach (var typeId in allTypeIds)
+        var now = DateTime.UtcNow;
+        var channel = Channel.CreateUnbounded<List<ItemType>>();
+
+        // Producer: Fetch types from API
+        var producerTask = Task.Run(async () =>
         {
+            var batch = new List<ItemType>();
+            const int batchSize = 100;
+            var processed = 0;
+
             try
             {
-                var typeInfo = await _esiClient.Universe.GetTypeAsync(typeId, cancellationToken);
-                types.Add(new ItemType
+                foreach (var typeId in allTypeIds)
                 {
-                    TypeId = typeInfo.TypeId,
-                    Name = typeInfo.Name,
-                    Description = typeInfo.Description,
-                    GroupId = typeInfo.GroupId,
-                    MarketGroupId = typeInfo.MarketGroupId,
-                    Volume = typeInfo.Volume,
-                    Capacity = typeInfo.Capacity,
-                    PackagedVolume = typeInfo.PackagedVolume,
-                    Mass = typeInfo.Mass,
-                    PortionSize = typeInfo.PortionSize,
-                    Radius = typeInfo.Radius,
-                    Published = typeInfo.Published,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                });
+                    if (cancellationToken.IsCancellationRequested) break;
 
-                processed++;
-                if (processed % 100 == 0)
-                {
-                    _logger.LogInformation("Processed {Processed}/{Total} types...", processed, allTypeIds.Count);
+                    try
+                    {
+                        var typeInfo = await _esiClient.Universe.GetTypeAsync(typeId, CancellationToken.None);
+                        batch.Add(new ItemType
+                        {
+                            TypeId = typeInfo.TypeId,
+                            Name = typeInfo.Name,
+                            Description = typeInfo.Description,
+                            GroupId = typeInfo.GroupId,
+                            MarketGroupId = typeInfo.MarketGroupId,
+                            Volume = typeInfo.Volume,
+                            Capacity = typeInfo.Capacity,
+                            PackagedVolume = typeInfo.PackagedVolume,
+                            Mass = typeInfo.Mass,
+                            PortionSize = typeInfo.PortionSize,
+                            Radius = typeInfo.Radius,
+                            Published = typeInfo.Published,
+                            CreatedAt = now,
+                            UpdatedAt = now
+                        });
+
+                        processed++;
+
+                        // Send batch when full
+                        if (batch.Count >= batchSize)
+                        {
+                            _logger.LogDebug("Producer: Sending batch of {Count} types (Total: {Total})", batch.Count, processed);
+                            await channel.Writer.WriteAsync(batch, CancellationToken.None);
+                            batch = new List<ItemType>();
+                        }
+
+                        if (processed % 500 == 0)
+                        {
+                            _logger.LogInformation("Producer: Processed {Processed}/{Total} types...", processed, allTypeIds.Count);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Producer: Failed to fetch type {TypeId}", typeId);
+                    }
                 }
+
+                // Send remaining batch
+                if (batch.Count > 0)
+                {
+                    _logger.LogDebug("Producer: Sending final batch of {Count} types", batch.Count);
+                    await channel.Writer.WriteAsync(batch, CancellationToken.None);
+                }
+
+                _logger.LogInformation("Producer: Completed processing {Total} types", processed);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to fetch type {TypeId}", typeId);
+                _logger.LogError(ex, "Producer: Error fetching types");
             }
+            finally
+            {
+                channel.Writer.Complete();
+            }
+        });
+
+        // Consumer: Insert to database
+        var consumerTask = Task.Run(async () =>
+        {
+            var totalInserted = 0;
+
+            try
+            {
+                await foreach (var batch in channel.Reader.ReadAllAsync(CancellationToken.None))
+                {
+                    _logger.LogDebug("Consumer: Inserting batch of {Count} types", batch.Count);
+                    var inserted = await _repository.BulkInsertTypesAsync(batch, CancellationToken.None);
+                    totalInserted += inserted;
+                    _logger.LogDebug("Consumer: Inserted {Count} types (Total: {Total})", inserted, totalInserted);
+                }
+
+                _logger.LogInformation("Consumer: Completed. Total inserted: {Total} types", totalInserted);
+                return totalInserted;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Consumer: Error inserting types");
+                return totalInserted;
+            }
+        });
+
+            // Wait for both tasks
+            await Task.WhenAll(producerTask, consumerTask);
+            var result = await consumerTask;
+
+            _logger.LogInformation("Inserted/Updated {Count} types", result);
+            return result;
         }
-
-        // Bulk insert
-        var inserted = await _repository.BulkInsertTypesAsync(types, cancellationToken);
-        _logger.LogInformation("Inserted/Updated {Count} types", inserted);
-
-        return inserted;
+        catch (TaskCanceledException)
+        {
+            _logger.LogInformation("Types collection was cancelled");
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Types collection was cancelled");
+            return 0;
+        }
     }
 
     /// <summary>
@@ -276,25 +372,29 @@ public class UniverseCollector
     }
 
     /// <summary>
-    /// Collect all systems from constellations and store in database
+    /// Collect all systems from constellations and store in database (pipeline mode)
     /// </summary>
     public async Task<int> CollectSystemsAsync(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Starting systems collection...");
+        try
+        {
+            _logger.LogInformation("Starting systems collection (pipeline mode)...");
 
-        var regionIds = await _esiClient.Universe.GetRegionsAsync(cancellationToken);
+            var regionIds = await _esiClient.Universe.GetRegionsAsync(CancellationToken.None);
 
         var allSystemIds = new HashSet<int>();
         foreach (var regionId in regionIds)
         {
+            if (cancellationToken.IsCancellationRequested) break;
+
             try
             {
-                var regionInfo = await _esiClient.Universe.GetRegionAsync(regionId, cancellationToken);
+                var regionInfo = await _esiClient.Universe.GetRegionAsync(regionId, CancellationToken.None);
                 foreach (var constellationId in regionInfo.Constellations)
                 {
                     try
                     {
-                        var constInfo = await _esiClient.Universe.GetConstellationAsync(constellationId, cancellationToken);
+                        var constInfo = await _esiClient.Universe.GetConstellationAsync(constellationId, CancellationToken.None);
                         foreach (var systemId in constInfo.Systems)
                         {
                             allSystemIds.Add(systemId);
@@ -314,71 +414,153 @@ public class UniverseCollector
 
         _logger.LogInformation("Found {Count} systems", allSystemIds.Count);
 
-        var systems = new List<SolarSystem>();
-        var processed = 0;
-        foreach (var systemId in allSystemIds)
+        var now = DateTime.UtcNow;
+        var channel = Channel.CreateUnbounded<List<SolarSystem>>();
+
+        // Producer: Fetch systems from API
+        var producerTask = Task.Run(async () =>
         {
+            var batch = new List<SolarSystem>();
+            const int batchSize = 100;
+            var processed = 0;
+
             try
             {
-                var systemInfo = await _esiClient.Universe.GetSystemAsync(systemId, cancellationToken);
-                systems.Add(new SolarSystem
+                foreach (var systemId in allSystemIds)
                 {
-                    SystemId = systemInfo.SystemId,
-                    Name = systemInfo.Name,
-                    ConstellationId = systemInfo.ConstellationId,
-                    PositionX = systemInfo.Position?.X,
-                    PositionY = systemInfo.Position?.Y,
-                    PositionZ = systemInfo.Position?.Z,
-                    SecurityStatus = systemInfo.SecurityStatus,
-                    SecurityClass = systemInfo.SecurityClass,
-                    StarId = systemInfo.StarId,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                });
+                    if (cancellationToken.IsCancellationRequested) break;
 
-                processed++;
-                if (processed % 100 == 0)
-                {
-                    _logger.LogInformation("Processed {Processed}/{Total} systems...", processed, allSystemIds.Count);
+                    try
+                    {
+                        var systemInfo = await _esiClient.Universe.GetSystemAsync(systemId, CancellationToken.None);
+                        batch.Add(new SolarSystem
+                        {
+                            SystemId = systemInfo.SystemId,
+                            Name = systemInfo.Name,
+                            ConstellationId = systemInfo.ConstellationId,
+                            PositionX = systemInfo.Position?.X,
+                            PositionY = systemInfo.Position?.Y,
+                            PositionZ = systemInfo.Position?.Z,
+                            SecurityStatus = systemInfo.SecurityStatus,
+                            SecurityClass = systemInfo.SecurityClass,
+                            StarId = systemInfo.StarId,
+                            CreatedAt = now,
+                            UpdatedAt = now
+                        });
+
+                        processed++;
+
+                        // Send batch when full
+                        if (batch.Count >= batchSize)
+                        {
+                            _logger.LogDebug("Producer: Sending batch of {Count} systems (Total: {Total})", batch.Count, processed);
+                            await channel.Writer.WriteAsync(batch, CancellationToken.None);
+                            batch = new List<SolarSystem>();
+                        }
+
+                        if (processed % 500 == 0)
+                        {
+                            _logger.LogInformation("Producer: Processed {Processed}/{Total} systems...", processed, allSystemIds.Count);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Producer: Failed to fetch system {SystemId}", systemId);
+                    }
                 }
+
+                // Send remaining batch
+                if (batch.Count > 0)
+                {
+                    _logger.LogDebug("Producer: Sending final batch of {Count} systems", batch.Count);
+                    await channel.Writer.WriteAsync(batch, CancellationToken.None);
+                }
+
+                _logger.LogInformation("Producer: Completed processing {Total} systems", processed);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to fetch system {SystemId}", systemId);
+                _logger.LogError(ex, "Producer: Error fetching systems");
             }
+            finally
+            {
+                channel.Writer.Complete();
+            }
+        });
+
+        // Consumer: Insert to database
+        var consumerTask = Task.Run(async () =>
+        {
+            var totalInserted = 0;
+
+            try
+            {
+                await foreach (var batch in channel.Reader.ReadAllAsync(CancellationToken.None))
+                {
+                    _logger.LogDebug("Consumer: Inserting batch of {Count} systems", batch.Count);
+                    var inserted = await _repository.BulkInsertSystemsAsync(batch, CancellationToken.None);
+                    totalInserted += inserted;
+                    _logger.LogDebug("Consumer: Inserted {Count} systems (Total: {Total})", inserted, totalInserted);
+                }
+
+                _logger.LogInformation("Consumer: Completed. Total inserted: {Total} systems", totalInserted);
+                return totalInserted;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Consumer: Error inserting systems");
+                return totalInserted;
+            }
+        });
+
+            // Wait for both tasks
+            await Task.WhenAll(producerTask, consumerTask);
+            var result = await consumerTask;
+
+            _logger.LogInformation("Inserted/Updated {Count} systems", result);
+            return result;
         }
-
-        var inserted = await _repository.BulkInsertSystemsAsync(systems, cancellationToken);
-        _logger.LogInformation("Inserted/Updated {Count} systems", inserted);
-
-        return inserted;
+        catch (TaskCanceledException)
+        {
+            _logger.LogInformation("Systems collection was cancelled");
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Systems collection was cancelled");
+            return 0;
+        }
     }
 
     /// <summary>
-    /// Collect all stations from systems and store in database
+    /// Collect all stations from systems and store in database (pipeline mode)
     /// </summary>
     public async Task<int> CollectStationsAsync(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Starting stations collection...");
+        try
+        {
+            _logger.LogInformation("Starting stations collection (pipeline mode)...");
 
-        var regionIds = await _esiClient.Universe.GetRegionsAsync(cancellationToken);
+            var regionIds = await _esiClient.Universe.GetRegionsAsync(CancellationToken.None);
 
         var allStationIds = new HashSet<int>();
         foreach (var regionId in regionIds)
         {
+            if (cancellationToken.IsCancellationRequested) break;
+
             try
             {
-                var regionInfo = await _esiClient.Universe.GetRegionAsync(regionId, cancellationToken);
+                var regionInfo = await _esiClient.Universe.GetRegionAsync(regionId, CancellationToken.None);
                 foreach (var constellationId in regionInfo.Constellations)
                 {
                     try
                     {
-                        var constInfo = await _esiClient.Universe.GetConstellationAsync(constellationId, cancellationToken);
+                        var constInfo = await _esiClient.Universe.GetConstellationAsync(constellationId, CancellationToken.None);
                         foreach (var systemId in constInfo.Systems)
                         {
                             try
                             {
-                                var systemInfo = await _esiClient.Universe.GetSystemAsync(systemId, cancellationToken);
+                                var systemInfo = await _esiClient.Universe.GetSystemAsync(systemId, CancellationToken.None);
                                 if (systemInfo.Stations != null)
                                 {
                                     foreach (var stationId in systemInfo.Stations)
@@ -407,38 +589,123 @@ public class UniverseCollector
 
         _logger.LogInformation("Found {Count} stations", allStationIds.Count);
 
-        var stations = new List<Station>();
-        foreach (var stationId in allStationIds)
+        var now = DateTime.UtcNow;
+        var channel = Channel.CreateUnbounded<List<Station>>();
+
+        // Producer: Fetch stations from API
+        var producerTask = Task.Run(async () =>
         {
+            var batch = new List<Station>();
+            const int batchSize = 100;
+            var processed = 0;
+
             try
             {
-                var stationInfo = await _esiClient.Universe.GetStationAsync(stationId, cancellationToken);
-                stations.Add(new Station
+                foreach (var stationId in allStationIds)
                 {
-                    StationId = stationInfo.StationId,
-                    Name = stationInfo.Name,
-                    SystemId = stationInfo.SystemId,
-                    TypeId = stationInfo.TypeId,
-                    Owner = stationInfo.Owner,
-                    PositionX = stationInfo.Position?.X,
-                    PositionY = stationInfo.Position?.Y,
-                    PositionZ = stationInfo.Position?.Z,
-                    RaceId = stationInfo.RaceId,
-                    Services = stationInfo.Services?.ToArray(),
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                });
+                    if (cancellationToken.IsCancellationRequested) break;
+
+                    try
+                    {
+                        var stationInfo = await _esiClient.Universe.GetStationAsync(stationId, CancellationToken.None);
+                        batch.Add(new Station
+                        {
+                            StationId = stationInfo.StationId,
+                            Name = stationInfo.Name,
+                            SystemId = stationInfo.SystemId,
+                            TypeId = stationInfo.TypeId,
+                            Owner = stationInfo.Owner,
+                            PositionX = stationInfo.Position?.X,
+                            PositionY = stationInfo.Position?.Y,
+                            PositionZ = stationInfo.Position?.Z,
+                            RaceId = stationInfo.RaceId,
+                            Services = stationInfo.Services?.ToArray(),
+                            CreatedAt = now,
+                            UpdatedAt = now
+                        });
+
+                        processed++;
+
+                        // Send batch when full
+                        if (batch.Count >= batchSize)
+                        {
+                            _logger.LogDebug("Producer: Sending batch of {Count} stations (Total: {Total})", batch.Count, processed);
+                            await channel.Writer.WriteAsync(batch, CancellationToken.None);
+                            batch = new List<Station>();
+                        }
+
+                        if (processed % 500 == 0)
+                        {
+                            _logger.LogInformation("Producer: Processed {Processed}/{Total} stations...", processed, allStationIds.Count);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Producer: Failed to fetch station {StationId}", stationId);
+                    }
+                }
+
+                // Send remaining batch
+                if (batch.Count > 0)
+                {
+                    _logger.LogDebug("Producer: Sending final batch of {Count} stations", batch.Count);
+                    await channel.Writer.WriteAsync(batch, CancellationToken.None);
+                }
+
+                _logger.LogInformation("Producer: Completed processing {Total} stations", processed);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to fetch station {StationId}", stationId);
+                _logger.LogError(ex, "Producer: Error fetching stations");
             }
+            finally
+            {
+                channel.Writer.Complete();
+            }
+        });
+
+        // Consumer: Insert to database
+        var consumerTask = Task.Run(async () =>
+        {
+            var totalInserted = 0;
+
+            try
+            {
+                await foreach (var batch in channel.Reader.ReadAllAsync(CancellationToken.None))
+                {
+                    _logger.LogDebug("Consumer: Inserting batch of {Count} stations", batch.Count);
+                    var inserted = await _repository.BulkInsertStationsAsync(batch, CancellationToken.None);
+                    totalInserted += inserted;
+                    _logger.LogDebug("Consumer: Inserted {Count} stations (Total: {Total})", inserted, totalInserted);
+                }
+
+                _logger.LogInformation("Consumer: Completed. Total inserted: {Total} stations", totalInserted);
+                return totalInserted;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Consumer: Error inserting stations");
+                return totalInserted;
+            }
+        });
+
+            // Wait for both tasks
+            await Task.WhenAll(producerTask, consumerTask);
+            var result = await consumerTask;
+
+            _logger.LogInformation("Inserted/Updated {Count} stations", result);
+            return result;
         }
-
-        var inserted = await _repository.BulkInsertStationsAsync(stations, cancellationToken);
-        _logger.LogInformation("Inserted/Updated {Count} stations", inserted);
-
-        return inserted;
+        catch (TaskCanceledException)
+        {
+            _logger.LogInformation("Stations collection was cancelled");
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Stations collection was cancelled");
+            return 0;
+        }
     }
 
     /// <summary>
@@ -446,17 +713,19 @@ public class UniverseCollector
     /// </summary>
     public async Task CollectAllAsync(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("=== Starting complete Universe data collection ===");
+        try
+        {
+            _logger.LogInformation("=== Starting complete Universe data collection ===");
 
-        await CollectCategoriesAsync(cancellationToken);
-        await CollectGroupsAsync(cancellationToken);
-        await CollectTypesAsync(cancellationToken);
-        await CollectRegionsAsync(cancellationToken);
-        await CollectConstellationsAsync(cancellationToken);
-        await CollectSystemsAsync(cancellationToken);
-        await CollectStationsAsync(cancellationToken);
+            await CollectCategoriesAsync(cancellationToken);
+            await CollectGroupsAsync(cancellationToken);
+            await CollectTypesAsync(cancellationToken);
+            await CollectRegionsAsync(cancellationToken);
+            await CollectConstellationsAsync(cancellationToken);
+            await CollectSystemsAsync(cancellationToken);
+            await CollectStationsAsync(cancellationToken);
 
-        _logger.LogInformation("=== Universe data collection completed ===");
+            _logger.LogInformation("=== Universe data collection completed ===");
 
         // Log final counts
         var categoriesCount = await _repository.GetCategoriesCountAsync(cancellationToken);
@@ -467,8 +736,17 @@ public class UniverseCollector
         var systemsCount = await _repository.GetSystemsCountAsync(cancellationToken);
         var stationsCount = await _repository.GetStationsCountAsync(cancellationToken);
 
-        _logger.LogInformation(
-            "Final counts: Categories={Categories}, Groups={Groups}, Types={Types}, Regions={Regions}, Constellations={Constellations}, Systems={Systems}, Stations={Stations}",
-            categoriesCount, groupsCount, typesCount, regionsCount, constellationsCount, systemsCount, stationsCount);
+            _logger.LogInformation(
+                "Final counts: Categories={Categories}, Groups={Groups}, Types={Types}, Regions={Regions}, Constellations={Constellations}, Systems={Systems}, Stations={Stations}",
+                categoriesCount, groupsCount, typesCount, regionsCount, constellationsCount, systemsCount, stationsCount);
+        }
+        catch (TaskCanceledException)
+        {
+            _logger.LogInformation("Universe data collection was cancelled");
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Universe data collection was cancelled");
+        }
     }
 }

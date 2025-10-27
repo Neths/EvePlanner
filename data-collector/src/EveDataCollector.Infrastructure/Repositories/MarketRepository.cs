@@ -1,7 +1,6 @@
 using Dapper;
 using EveDataCollector.Core.Interfaces.Repositories;
 using EveDataCollector.Core.Models.Market;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -9,13 +8,12 @@ namespace EveDataCollector.Infrastructure.Repositories;
 
 public class MarketRepository : IMarketRepository
 {
-    private readonly string _connectionString;
+    private readonly Func<NpgsqlConnection> _connectionFactory;
     private readonly ILogger<MarketRepository> _logger;
 
-    public MarketRepository(IConfiguration configuration, ILogger<MarketRepository> logger)
+    public MarketRepository(Func<NpgsqlConnection> connectionFactory, ILogger<MarketRepository> logger)
     {
-        _connectionString = configuration.GetConnectionString("DefaultConnection")
-            ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
+        _connectionFactory = connectionFactory;
         _logger = logger;
     }
 
@@ -23,6 +21,15 @@ public class MarketRepository : IMarketRepository
 
     public async Task UpsertMarketOrdersAsync(IEnumerable<MarketOrder> orders, CancellationToken cancellationToken = default)
     {
+        var ordersList = orders.ToList();
+        _logger.LogDebug("UpsertMarketOrdersAsync called with {Count} orders", ordersList.Count);
+
+        if (ordersList.Count == 0)
+        {
+            _logger.LogWarning("No orders to upsert, skipping");
+            return;
+        }
+
         const string sql = @"
             INSERT INTO market_orders (
                 order_id, type_id, region_id, location_id, system_id,
@@ -39,15 +46,36 @@ public class MarketRepository : IMarketRepository
                 volume_remain = EXCLUDED.volume_remain,
                 updated_at = EXCLUDED.updated_at";
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = _connectionFactory();
         await connection.OpenAsync(cancellationToken);
+        _logger.LogDebug("Database connection opened");
 
-        var count = await connection.ExecuteAsync(new CommandDefinition(
-            sql,
-            orders,
-            cancellationToken: cancellationToken));
+        // Use explicit transaction for better performance with large batches
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        _logger.LogDebug("Transaction started");
 
-        _logger.LogInformation("Upserted {Count} market orders", count);
+        try
+        {
+            _logger.LogDebug("Executing SQL with {Count} orders", ordersList.Count);
+
+            // Use CancellationToken.None for DB operations to prevent mid-transaction cancellation
+            var count = await connection.ExecuteAsync(new CommandDefinition(
+                sql,
+                ordersList,
+                transaction: transaction,
+                cancellationToken: CancellationToken.None));
+
+            _logger.LogDebug("SQL executed, affected rows: {Count}", count);
+
+            await transaction.CommitAsync(CancellationToken.None);
+            _logger.LogInformation("Transaction committed: Upserted {Count} market orders", count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to upsert market orders, rolling back transaction");
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
     }
 
     public async Task<IEnumerable<MarketOrder>> GetMarketOrdersAsync(int regionId, int? typeId = null, CancellationToken cancellationToken = default)
@@ -70,7 +98,7 @@ public class MarketRepository : IMarketRepository
 
         sql += " ORDER BY price";
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = _connectionFactory();
         return await connection.QueryAsync<MarketOrder>(new CommandDefinition(
             sql,
             new { RegionId = regionId, TypeId = typeId },
@@ -84,11 +112,13 @@ public class MarketRepository : IMarketRepository
             WHERE region_id = @RegionId
               AND updated_at < @OlderThan";
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = _connectionFactory();
+
+        // Use CancellationToken.None to ensure cleanup completes even if job is cancelled
         var count = await connection.ExecuteAsync(new CommandDefinition(
             sql,
             new { RegionId = regionId, OlderThan = olderThan },
-            cancellationToken: cancellationToken));
+            cancellationToken: CancellationToken.None));
 
         _logger.LogInformation("Deleted {Count} stale market orders from region {RegionId}", count, regionId);
     }
@@ -111,7 +141,7 @@ public class MarketRepository : IMarketRepository
                 average_price = EXCLUDED.average_price,
                 updated_at = EXCLUDED.updated_at";
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = _connectionFactory();
         await connection.OpenAsync(cancellationToken);
 
         var count = await connection.ExecuteAsync(new CommandDefinition(
@@ -133,7 +163,7 @@ public class MarketRepository : IMarketRepository
             FROM market_prices
             WHERE type_id = @TypeId";
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = _connectionFactory();
         return await connection.QuerySingleOrDefaultAsync<MarketPrice>(new CommandDefinition(
             sql,
             new { TypeId = typeId },
@@ -151,7 +181,7 @@ public class MarketRepository : IMarketRepository
             FROM market_prices
             ORDER BY type_id";
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = _connectionFactory();
         return await connection.QueryAsync<MarketPrice>(new CommandDefinition(
             sql,
             cancellationToken: cancellationToken));
@@ -179,7 +209,7 @@ public class MarketRepository : IMarketRepository
                 volume = EXCLUDED.volume,
                 order_count = EXCLUDED.order_count";
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = _connectionFactory();
         await connection.OpenAsync(cancellationToken);
 
         var count = await connection.ExecuteAsync(new CommandDefinition(
@@ -218,7 +248,7 @@ public class MarketRepository : IMarketRepository
 
         sql += " ORDER BY date DESC";
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = _connectionFactory();
         return await connection.QueryAsync<MarketHistory>(new CommandDefinition(
             sql,
             new { TypeId = typeId, RegionId = regionId, StartDate = startDate, EndDate = endDate },

@@ -136,11 +136,22 @@ public class MarketHistoryCollector
 
     private class HistoryResponse
     {
+        [System.Text.Json.Serialization.JsonPropertyName("date")]
         public DateTime Date { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("average")]
         public decimal Average { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("highest")]
         public decimal Highest { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("lowest")]
         public decimal Lowest { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("volume")]
         public long Volume { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("order_count")]
         public long OrderCount { get; set; }
     }
 

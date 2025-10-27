@@ -80,8 +80,13 @@ public class MarketPricesCollector
 
     private class PriceResponse
     {
+        [System.Text.Json.Serialization.JsonPropertyName("type_id")]
         public int TypeId { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("adjusted_price")]
         public decimal? AdjustedPrice { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("average_price")]
         public decimal? AveragePrice { get; set; }
     }
 
