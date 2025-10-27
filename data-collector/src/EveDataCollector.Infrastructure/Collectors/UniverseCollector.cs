@@ -236,15 +236,37 @@ public class UniverseCollector
         var consumerTask = Task.Run(async () =>
         {
             var totalInserted = 0;
+            var batchCount = 0;
+            const int accumulateCount = 10; // Accumulate 10 batches (~1000 items) before inserting
+            var accumulatedBatch = new List<ItemType>();
 
             try
             {
                 await foreach (var batch in channel.Reader.ReadAllAsync(CancellationToken.None))
                 {
-                    _logger.LogDebug("Consumer: Inserting batch of {Count} types", batch.Count);
-                    var inserted = await _repository.BulkInsertTypesAsync(batch, CancellationToken.None);
+                    batchCount++;
+                    accumulatedBatch.AddRange(batch);
+                    _logger.LogDebug("Consumer: Accumulated batch {BatchNum} with {Count} types (Total accumulated: {AccumulatedCount})",
+                        batchCount, batch.Count, accumulatedBatch.Count);
+
+                    // Insert when we've accumulated enough or if this is potentially the last batch
+                    if (accumulatedBatch.Count >= accumulateCount * 100 || batch.Count < 100)
+                    {
+                        _logger.LogDebug("Consumer: Inserting accumulated batch of {Count} types", accumulatedBatch.Count);
+                        var inserted = await _repository.BulkInsertTypesAsync(accumulatedBatch, CancellationToken.None);
+                        totalInserted += inserted;
+                        _logger.LogDebug("Consumer: Inserted {Count} types (Total: {Total})", inserted, totalInserted);
+                        accumulatedBatch.Clear();
+                        batchCount = 0;
+                    }
+                }
+
+                // Insert any remaining items in the accumulated batch
+                if (accumulatedBatch.Count > 0)
+                {
+                    _logger.LogDebug("Consumer: Inserting final accumulated batch of {Count} types", accumulatedBatch.Count);
+                    var inserted = await _repository.BulkInsertTypesAsync(accumulatedBatch, CancellationToken.None);
                     totalInserted += inserted;
-                    _logger.LogDebug("Consumer: Inserted {Count} types (Total: {Total})", inserted, totalInserted);
                 }
 
                 _logger.LogInformation("Consumer: Completed. Total inserted: {Total} types", totalInserted);
@@ -492,15 +514,37 @@ public class UniverseCollector
         var consumerTask = Task.Run(async () =>
         {
             var totalInserted = 0;
+            var batchCount = 0;
+            const int accumulateCount = 10; // Accumulate 10 batches (~1000 items) before inserting
+            var accumulatedBatch = new List<SolarSystem>();
 
             try
             {
                 await foreach (var batch in channel.Reader.ReadAllAsync(CancellationToken.None))
                 {
-                    _logger.LogDebug("Consumer: Inserting batch of {Count} systems", batch.Count);
-                    var inserted = await _repository.BulkInsertSystemsAsync(batch, CancellationToken.None);
+                    batchCount++;
+                    accumulatedBatch.AddRange(batch);
+                    _logger.LogDebug("Consumer: Accumulated batch {BatchNum} with {Count} systems (Total accumulated: {AccumulatedCount})",
+                        batchCount, batch.Count, accumulatedBatch.Count);
+
+                    // Insert when we've accumulated enough or if this is potentially the last batch
+                    if (accumulatedBatch.Count >= accumulateCount * 100 || batch.Count < 100)
+                    {
+                        _logger.LogDebug("Consumer: Inserting accumulated batch of {Count} systems", accumulatedBatch.Count);
+                        var inserted = await _repository.BulkInsertSystemsAsync(accumulatedBatch, CancellationToken.None);
+                        totalInserted += inserted;
+                        _logger.LogDebug("Consumer: Inserted {Count} systems (Total: {Total})", inserted, totalInserted);
+                        accumulatedBatch.Clear();
+                        batchCount = 0;
+                    }
+                }
+
+                // Insert any remaining items in the accumulated batch
+                if (accumulatedBatch.Count > 0)
+                {
+                    _logger.LogDebug("Consumer: Inserting final accumulated batch of {Count} systems", accumulatedBatch.Count);
+                    var inserted = await _repository.BulkInsertSystemsAsync(accumulatedBatch, CancellationToken.None);
                     totalInserted += inserted;
-                    _logger.LogDebug("Consumer: Inserted {Count} systems (Total: {Total})", inserted, totalInserted);
                 }
 
                 _logger.LogInformation("Consumer: Completed. Total inserted: {Total} systems", totalInserted);
@@ -668,15 +712,37 @@ public class UniverseCollector
         var consumerTask = Task.Run(async () =>
         {
             var totalInserted = 0;
+            var batchCount = 0;
+            const int accumulateCount = 10; // Accumulate 10 batches (~1000 items) before inserting
+            var accumulatedBatch = new List<Station>();
 
             try
             {
                 await foreach (var batch in channel.Reader.ReadAllAsync(CancellationToken.None))
                 {
-                    _logger.LogDebug("Consumer: Inserting batch of {Count} stations", batch.Count);
-                    var inserted = await _repository.BulkInsertStationsAsync(batch, CancellationToken.None);
+                    batchCount++;
+                    accumulatedBatch.AddRange(batch);
+                    _logger.LogDebug("Consumer: Accumulated batch {BatchNum} with {Count} stations (Total accumulated: {AccumulatedCount})",
+                        batchCount, batch.Count, accumulatedBatch.Count);
+
+                    // Insert when we've accumulated enough or if this is potentially the last batch
+                    if (accumulatedBatch.Count >= accumulateCount * 100 || batch.Count < 100)
+                    {
+                        _logger.LogDebug("Consumer: Inserting accumulated batch of {Count} stations", accumulatedBatch.Count);
+                        var inserted = await _repository.BulkInsertStationsAsync(accumulatedBatch, CancellationToken.None);
+                        totalInserted += inserted;
+                        _logger.LogDebug("Consumer: Inserted {Count} stations (Total: {Total})", inserted, totalInserted);
+                        accumulatedBatch.Clear();
+                        batchCount = 0;
+                    }
+                }
+
+                // Insert any remaining items in the accumulated batch
+                if (accumulatedBatch.Count > 0)
+                {
+                    _logger.LogDebug("Consumer: Inserting final accumulated batch of {Count} stations", accumulatedBatch.Count);
+                    var inserted = await _repository.BulkInsertStationsAsync(accumulatedBatch, CancellationToken.None);
                     totalInserted += inserted;
-                    _logger.LogDebug("Consumer: Inserted {Count} stations (Total: {Total})", inserted, totalInserted);
                 }
 
                 _logger.LogInformation("Consumer: Completed. Total inserted: {Total} stations", totalInserted);
