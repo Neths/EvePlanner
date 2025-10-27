@@ -23,6 +23,16 @@ public class EsiClient
         };
     }
 
+    /// <summary>
+    /// Generic GET request to any ESI endpoint
+    /// </summary>
+    public async Task<T?> GetAsync<T>(string path, CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.GetAsync(path, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<T>(_jsonOptions, cancellationToken);
+    }
+
     // Universe Endpoints
     public Universe Universe => new(_httpClient, _jsonOptions);
 }

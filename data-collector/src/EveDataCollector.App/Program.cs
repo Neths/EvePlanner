@@ -1,26 +1,60 @@
-using EveDataCollector.Core.Interfaces.Jobs;
+using EveDataCollector.App.Data;
+using EveDataCollector.App.Services;
+using EveDataCollector.Core.Interfaces.Auth;
 using EveDataCollector.Core.Interfaces.Repositories;
+using EveDataCollector.Infrastructure.Auth;
 using EveDataCollector.Infrastructure.Collectors;
 using EveDataCollector.Infrastructure.ESI;
-using EveDataCollector.Infrastructure.Jobs;
 using EveDataCollector.Infrastructure.Repositories;
-using EveDataCollector.Shared.Scheduling;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+using EveDataCollector.Shared.Auth;
+using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Polly;
 using Polly.Extensions.Http;
 using Serilog;
+using TickerQ;
+using TickerQ.Dashboard;
+using TickerQ.Dashboard.DependencyInjection;
+using TickerQ.DependencyInjection;
+using TickerQ.EntityFrameworkCore;
+using TickerQ.EntityFrameworkCore.DependencyInjection;
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
+    .Enrich.FromLogContext()
     .CreateLogger();
 
-builder.Services.AddSerilog();
+builder.Host.UseSerilog();
+
+// Add services to the container
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+// Configure PostgreSQL DbContext for TickerQ
+var connectionString = builder.Configuration.GetConnectionString("Default")
+    ?? throw new InvalidOperationException("Connection string 'Default' not found");
+
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseNpgsql(connectionString));
+
+// Configure TickerQ
+builder.Services.AddTickerQ(options =>
+{
+    // Set max concurrency to 1 to ensure only one job can run at a time
+    options.SetMaxConcurrency(1);
+    options.AddOperationalStore<ApplicationDbContext>(efOpt =>
+    {
+        efOpt.UseModelCustomizerForMigrations();
+    });
+    options.AddDashboard(uiopt =>
+    {
+        uiopt.BasePath = "/tickerq";
+    });
+});
 
 // Register HttpClient for ESI with Polly retry policy
 builder.Services.AddHttpClient<EsiClient>(client =>
@@ -35,32 +69,106 @@ builder.Services.AddHttpClient<EsiClient>(client =>
 // Register database connection factory
 builder.Services.AddSingleton<Func<NpgsqlConnection>>(sp =>
 {
-    var connectionString = builder.Configuration.GetConnectionString("Default")
-        ?? throw new InvalidOperationException("Connection string 'Default' not found");
     return () => new NpgsqlConnection(connectionString);
 });
 
+// Register HttpClient for OAuth
+builder.Services.AddHttpClient<IEsiOAuthClient, EsiOAuthClient>();
+
+// Register HttpClient for authenticated ESI
+builder.Services.AddHttpClient<AuthenticatedEsiClient>(client =>
+{
+    var esiConfig = builder.Configuration.GetSection("EsiClient");
+    client.BaseAddress = new Uri(esiConfig["BaseUrl"] ?? "https://esi.evetech.net/latest");
+    client.DefaultRequestHeaders.Add("User-Agent", esiConfig["UserAgent"] ?? "EveDataCollector/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(int.Parse(esiConfig["Timeout"] ?? "30"));
+})
+.AddPolicyHandler(GetRetryPolicy());
+
+// Register HttpClient for market collectors
+builder.Services.AddHttpClient<MarketOrdersCollector>(client =>
+{
+    var esiConfig = builder.Configuration.GetSection("EsiClient");
+    client.BaseAddress = new Uri(esiConfig["BaseUrl"] ?? "https://esi.evetech.net/latest");
+    client.DefaultRequestHeaders.Add("User-Agent", esiConfig["UserAgent"] ?? "EveDataCollector/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(int.Parse(esiConfig["Timeout"] ?? "30"));
+})
+.AddPolicyHandler(GetRetryPolicy());
+
+builder.Services.AddHttpClient<MarketPricesCollector>(client =>
+{
+    var esiConfig = builder.Configuration.GetSection("EsiClient");
+    client.BaseAddress = new Uri(esiConfig["BaseUrl"] ?? "https://esi.evetech.net/latest");
+    client.DefaultRequestHeaders.Add("User-Agent", esiConfig["UserAgent"] ?? "EveDataCollector/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(int.Parse(esiConfig["Timeout"] ?? "30"));
+})
+.AddPolicyHandler(GetRetryPolicy());
+
+builder.Services.AddHttpClient<MarketHistoryCollector>(client =>
+{
+    var esiConfig = builder.Configuration.GetSection("EsiClient");
+    client.BaseAddress = new Uri(esiConfig["BaseUrl"] ?? "https://esi.evetech.net/latest");
+    client.DefaultRequestHeaders.Add("User-Agent", esiConfig["UserAgent"] ?? "EveDataCollector/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(int.Parse(esiConfig["Timeout"] ?? "30"));
+})
+.AddPolicyHandler(GetRetryPolicy());
+
 // Register repositories
 builder.Services.AddScoped<IUniverseRepository, UniverseRepository>();
+builder.Services.AddScoped<IAuthRepository, AuthRepository>();
+builder.Services.AddScoped<ICharacterDataRepository, CharacterDataRepository>();
+builder.Services.AddScoped<IMarketRepository, MarketRepository>();
 
 // Register collectors
 builder.Services.AddScoped<UniverseCollector>();
+builder.Services.AddScoped<CharacterSkillsCollector>();
+builder.Services.AddScoped<CharacterAssetsCollector>();
+builder.Services.AddScoped<CharacterWalletCollector>();
+builder.Services.AddScoped<CharacterDataCollector>();
+// Note: MarketOrdersCollector, MarketPricesCollector, and MarketHistoryCollector are registered via AddHttpClient above
+builder.Services.AddScoped<MarketDataCollector>();
 
-// Register scheduled jobs
-builder.Services.AddScoped<IScheduledJob, UniverseCollectionJob>();
+// Register OAuth services
+builder.Services.AddScoped<CharacterAuthService>();
 
-// Register job scheduler as hosted service
-builder.Services.AddHostedService<JobSchedulerService>();
+// Register scheduled collection service for TickerQ
+builder.Services.AddScoped<ScheduledCollectionService>();
 
-// Build and run
-var host = builder.Build();
+// Register background services
+builder.Services.AddHostedService<TokenRefreshService>();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseSerilogRequestLogging();
+
+app.UseAuthorization();
+
+app.MapControllers();
+
+// Configure TickerQ processor and dashboard
+app.UseTickerQ();
 
 try
 {
-    Log.Information("Starting EVE Data Collector...");
+    Log.Information("Starting EVE Data Collector Web API...");
+
+    // Ensure database is created and migrated
+    using (var scope = app.Services.CreateScope())
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await dbContext.Database.EnsureCreatedAsync();
+        Log.Information("TickerQ database initialized");
+    }
 
     // Test database connection
-    var dbConnectionFactory = host.Services.GetRequiredService<Func<NpgsqlConnection>>();
+    var dbConnectionFactory = app.Services.GetRequiredService<Func<NpgsqlConnection>>();
     await using (var connection = dbConnectionFactory())
     {
         await connection.OpenAsync();
@@ -68,48 +176,26 @@ try
     }
 
     // Test ESI client
-    var esiClient = host.Services.GetRequiredService<EsiClient>();
+    var esiClient = app.Services.GetRequiredService<EsiClient>();
     var categories = await esiClient.Universe.GetCategoriesAsync();
     Log.Information("ESI client test successful: Found {Count} categories", categories.Count);
 
-    // Ask user if they want to collect Universe data immediately
-    Log.Information("");
-    Log.Information("Do you want to collect Universe data now? (y/n)");
-    Log.Information("(Data will be collected automatically according to schedule)");
-    var answer = Console.ReadLine()?.Trim().ToLower();
+    Log.Information("EVE Data Collector Web API started successfully");
+    Log.Information("TickerQ Dashboard available at: /tickerq");
+    Log.Information("Swagger UI available at: /swagger");
+    Log.Information("Scheduled jobs are managed by TickerQ automatically");
 
-    if (answer == "y" || answer == "yes")
-    {
-        using var scope = host.Services.CreateScope();
-        var collector = scope.ServiceProvider.GetRequiredService<UniverseCollector>();
-
-        await collector.CollectAllAsync();
-
-        Log.Information("Universe data collection completed successfully!");
-    }
-    else
-    {
-        Log.Information("Skipping immediate Universe data collection.");
-    }
-
-    Log.Information("");
-    Log.Information("All systems operational. Job scheduler is running...");
-    Log.Information("Press Ctrl+C to stop.");
-
-    // Run the host (this will keep the application running and execute scheduled jobs)
-    await host.RunAsync();
+    await app.RunAsync();
 }
 catch (Exception ex)
 {
     Log.Fatal(ex, "Application terminated unexpectedly");
-    return 1;
+    throw;
 }
 finally
 {
     await Log.CloseAndFlushAsync();
 }
-
-return 0;
 
 // Polly retry policy for ESI HTTP calls
 static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
